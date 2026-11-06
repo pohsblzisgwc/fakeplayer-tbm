@@ -1,4 +1,4 @@
-# Fake Player TBM 1.4.0
+# Fake Player TBM 1.5.0
 
 **AI disclosure: This project was developed entirely by OpenAI Codex.**
 
@@ -33,6 +33,8 @@ The equivalent commands are:
 Names consist of the prefix and a number starting at 1. Use only letters, digits and underscores; each full name is limited to 16 characters. Count is 1–100 and duration 1–86400 seconds. Each coordinate is processed once and the task finishes after its fake players have been removed.
 
 ## Recovery and limitations
+
+- When the client can see the fake player and detects bedrock directly under its feet within the dimension’s bottom five layers, it sends `/player NAME kill` early. After cleanup, the coordinate is considered complete and the name can be reused. Detection is subject to the command interval; if the entity or chunk is not loaded on the client, the normal timed cleanup remains in effect.
 
 - The target chunk must be loaded by the client. If it is not loaded, the column has no block, the first non-air block is not a full collision block, or the two blocks above it are not air, the position waits and is rechecked with exponential backoff. Move near the area to load the chunk.
 - After joining, the fake player is instructed to sneak, look down, and hold attack, in that order. Sneaking can prevent walking off an edge, but cannot prevent falling when the block below is mined or protect against other damage. Client block data may lag behind the server.

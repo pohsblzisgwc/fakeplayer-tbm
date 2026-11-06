@@ -10,6 +10,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.network.chat.Component;
 import java.util.Locale;
 
@@ -135,10 +137,15 @@ public final class FakeTbm implements ClientModInitializer {
                     if (stopping) s.phase=Phase.FREE; else scheduleRetry(s);
                     message(s.name+" 已离线，将退避后重试当前位置"); continue;
                 }
-                if (sameDimension && s.phase==Phase.WORKING && tick-s.since>=100) {
-                    // Entity visibility is optional; tab-list presence is the online test.
+                if (sameDimension) {
+                    // The tab list confirms presence; entity coordinates exist only in tracking range.
                     var entity=mc.level.players().stream().filter(p -> p.getScoreboardName().equalsIgnoreCase(s.name)).findFirst();
-                    if (entity.isPresent() && (Math.abs(entity.get().getX()-(s.x+0.5))>1.5 || Math.abs(entity.get().getZ()-(s.z+0.5))>1.5)) {
+                    if (entity.isPresent() && onBedrock(mc.level,entity.get())) {
+                        s.complete=true; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick; s.killRetries=0;
+                        message(s.name+" 已到达底部基岩，正在清理"); return;
+                    }
+                    if (entity.isPresent() && s.phase==Phase.WORKING && tick-s.since>=100
+                            && (Math.abs(entity.get().getX()-(s.x+0.5))>1.5 || Math.abs(entity.get().getZ()-(s.z+0.5))>1.5)) {
                         s.complete=false; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick; s.killRetries=0;
                         message(s.name+" 偏离目标，将重新处理当前位置"); return;
                     }
@@ -169,6 +176,12 @@ public final class FakeTbm implements ClientModInitializer {
         }
         boolean idle=true; for (Slot s:slots) if (s.phase!=Phase.FREE) idle=false;
         if (idle && (stopping || next==total)) { running=false; message(stopping ? "任务已停止" : "区域处理完成，共 "+total+" 个位置"); }
+    }
+    private static boolean onBedrock(ClientLevel level, AbstractClientPlayer player) {
+        int x=(int)Math.floor(player.getX()), z=(int)Math.floor(player.getZ());
+        int below=(int)Math.floor(player.getY()-0.01);
+        if (below<level.getMinY() || below>level.getMinY()+4 || !level.hasChunk(x >> 4,z >> 4)) return false;
+        return level.getBlockState(new BlockPos(x,below,z)).getBlock()==Blocks.BEDROCK;
     }
     private static long backoff(long base, int failures) {
         return Math.min(6000L, base << Math.min(failures, 6));

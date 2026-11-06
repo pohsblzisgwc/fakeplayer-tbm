@@ -85,6 +85,19 @@ public final class SchedulerTest {
   c.online.add("TBM_1"); ticks(1); check(c.sent.get(1).equals("player TBM_1 sneak"),"sneak immediately after join");
   c.online.remove("TBM_1"); ticks(1); mc.level.blocks.remove(60); mc.level.blocks.put(55,1); ticks(100);
   check(c.sent.get(c.sent.size()-1).equals("player TBM_1 spawn at 0.5 56 0.5"),"retry rechecks current floor");
+  // A visible bot standing on bottom-layer bedrock is cleaned up, then its name is reused.
+  FakeTbm.running=false; c.online.clear(); c.sent.clear(); mc.level.visible.clear(); mc.level.blocks.clear(); mc.level.blocks.put(64,1); mc.level.blocks.put(0,3);
+  FakeTbm.command(null,"area 0 0 1 0 64"); FakeTbm.command(null,"config TBM_ 1 30"); FakeTbm.command(null,"interval 1"); FakeTbm.command(null,"start");
+  ticks(1); c.online.add("TBM_1");
+  var bottom=new net.minecraft.client.player.AbstractClientPlayer(); bottom.name="TBM_1"; bottom.x=0.5; bottom.y=1; bottom.z=0.5; mc.level.visible.add(bottom);
+  ticks(1); check(c.sent.size()==2 && c.sent.get(1).equals("player TBM_1 kill"),"bedrock triggers immediate cleanup");
+  c.online.remove("TBM_1"); ticks(1);
+  check(c.sent.size()==3 && c.sent.get(2).equals("player TBM_1 spawn at 1.5 65 0.5"),"bedrock completion reuses name for next position");
+  // Ordinary blocks and bedrock above the world's bottom layers are not a match.
+  Method atBedrock=FakeTbm.class.getDeclaredMethod("onBedrock",net.minecraft.client.multiplayer.ClientLevel.class,net.minecraft.client.player.AbstractClientPlayer.class); atBedrock.setAccessible(true);
+  mc.level.blocks.put(0,1); check(!(boolean)atBedrock.invoke(null,mc.level,bottom),"ordinary bottom block ignored");
+  bottom.y=101; mc.level.blocks.put(100,3); check(!(boolean)atBedrock.invoke(null,mc.level,bottom),"elevated bedrock ignored");
+  bottom.y=1; mc.level.blocks.put(0,3); mc.level.loaded=false; check(!(boolean)atBedrock.invoke(null,mc.level,bottom),"unloaded chunk not interpreted as bedrock");
   System.out.println("Scheduler tests passed");
  }
 }
