@@ -98,6 +98,71 @@ public final class SchedulerTest {
   mc.level.blocks.put(0,1); check(!(boolean)atBedrock.invoke(null,mc.level,bottom),"ordinary bottom block ignored");
   bottom.y=101; mc.level.blocks.put(100,3); check(!(boolean)atBedrock.invoke(null,mc.level,bottom),"elevated bedrock ignored");
   bottom.y=1; mc.level.blocks.put(0,3); mc.level.loaded=false; check(!(boolean)atBedrock.invoke(null,mc.level,bottom),"unloaded chunk not interpreted as bedrock");
+  // Progress survives a new store instance; world, dimension and search height stay isolated.
+  var dir=java.nio.file.Files.createTempDirectory("progress-test-");
+  var store=new ProgressStore(dir,"world-A","overworld");
+  store.mark(4,64,-2); store.save(); store=new ProgressStore(dir,"world-A","overworld");
+  check(store.contains(4,64,-2) && store.count(0,8,-3,0,64)==1,"progress saved and reloaded");
+  check(!store.contains(4,63,-2),"search Y isolated");
+  check(!new ProgressStore(dir,"world-B","overworld").contains(4,64,-2),"world isolated");
+  check(!new ProgressStore(dir,"world-A","the_nether").contains(4,64,-2),"dimension isolated");
+  store.clear(0,8,-3,0,64); store.save(); check(!new ProgressStore(dir,"world-A","overworld").contains(4,64,-2),"clear persists");
+  // Restart the task: its first coordinate was completed on bedrock and must be skipped.
+  FakeTbm.running=false; mc.level.loaded=true; mc.level.visible.clear(); c.online.clear(); c.sent.clear();
+  FakeTbm.command(null,"area 0 0 1 0 64"); check(FakeTbm.completedCount==1,"progress bar loads completion");
+  check(FakeTbm.command(null,"start")==1,"restart task"); ticks(1);
+  check(c.sent.size()==1 && c.sent.get(0).contains("1.5 65 0.5"),"restart skips completed coordinate");
+  // A different server cannot resume an old connection; the original can.
+  mc.connection=new net.minecraft.client.multiplayer.ClientPacketListener(); mc.server.ip="another.invalid"; ticks(3);
+  check(FakeTbm.running && mc.connection.sent.isEmpty(),"disconnect pauses without commands");
+  check(FakeTbm.command(null,"resume")==0,"wrong server rejected");
+  mc.server.ip="test.invalid"; check(FakeTbm.command(null,"resume")==1,"same server resumes");
+  // Timer expiry is not completion: after cleanup, the column is scheduled again.
+  FakeTbm.running=false; mc.level.visible.clear(); mc.connection.online.clear(); mc.connection.sent.clear(); var resumed=mc.connection;
+  FakeTbm.command(null,"area 5 0 5 0 64"); FakeTbm.command(null,"config TBM_ 1 1"); FakeTbm.command(null,"interval 1"); FakeTbm.command(null,"start");
+  ticks(1); resumed.online.add("TBM_1"); ticks(3); ticks(20);
+  check(resumed.sent.get(resumed.sent.size()-1).endsWith("kill") && FakeTbm.completedCount==0,"timer expiry does not mark complete");
+  resumed.online.remove("TBM_1"); ticks(1); ticks(99);
+  check(resumed.sent.stream().filter(v->v.contains(" spawn at ")).count()==1,"round waits before retry");
+  ticks(1); check(resumed.sent.stream().filter(v->v.contains(" spawn at ")).count()==2,"unconfirmed column continues next round");
+  // Settings and progress can be restored after a client restart.
+  var settingsDir=java.nio.file.Files.createTempDirectory("settings-test-");
+  var settingsStore=new SettingsStore(settingsDir);
+  var savedSettings=new SettingsStore.Settings(true,-4,5,-3,6,62,"TBM_",4,55,3);
+  settingsStore.save(savedSettings); check(savedSettings.equals(new SettingsStore(settingsDir).load()),"settings round trip");
+  java.nio.file.Files.writeString(settingsDir.resolve("fake-player-tbm.properties"),"broken=\\uGGGG");
+  boolean invalidSettings=false; try { settingsStore.load(); } catch (java.io.IOException e) { invalidSettings=true; }
+  check(invalidSettings,"invalid settings reported");
+  var blocked=java.nio.file.Files.createTempFile("progress-blocked-", ".tmp");
+  var unsaved=new ProgressStore(blocked,"world-A","overworld"); unsaved.mark(1,64,1);
+  boolean failedSave=false; try { unsaved.save(); } catch (java.io.IOException e) { failedSave=true; }
+  check(failedSave && unsaved.dirty() && unsaved.contains(1,64,1),"failed save preserves pending progress");
+  FakeTbm.running=false; FakeTbm.command(null,"area 0 0 0 0 64");
+  FakeTbm.command(null,"config BOT_ 2 31"); FakeTbm.command(null,"interval 3");
+  var loadedFlag=FakeTbm.class.getDeclaredField("settingsLoaded"); loadedFlag.setAccessible(true); loadedFlag.setBoolean(null,false);
+  FakeTbm.areaSet=false; FakeTbm.count=99; FakeTbm.prefix="wrong"; FakeTbm.completedCount=0;
+  FakeTbm.command(null,"help");
+  check(FakeTbm.areaSet && FakeTbm.count==2 && FakeTbm.prefix.equals("BOT_") && FakeTbm.interval==3 && FakeTbm.completedCount==1,"restart restores settings and progress");
+  // A completely finished area ends without issuing commands, even if names are occupied.
+  resumed.sent.clear(); resumed.online.add("BOT_1"); resumed.online.add("BOT_2");
+  FakeTbm.command(null,"start"); ticks(1);
+  check(!FakeTbm.running && resumed.sent.isEmpty(),"completed area skips occupied names");
+  check(FakeTbm.command(null,"clear")==1 && FakeTbm.completedCount==0,"explicit area progress clear");
+  FakeTbm.command(null,"area 0 0 0 0 64"); check(FakeTbm.completedCount==0,"cleared progress stays cleared");
+  // A bot displaced into another column cannot mark the assigned column complete.
+  FakeTbm.running=false; resumed.online.clear(); resumed.sent.clear(); mc.level.visible.clear(); mc.server.ip="fresh.invalid";
+  mc.level.blocks.clear(); mc.level.blocks.put(64,1); mc.level.blocks.put(0,3);
+  FakeTbm.command(null,"area 0 0 1 0 64"); FakeTbm.command(null,"config TBM_ 1 1"); FakeTbm.command(null,"interval 1"); FakeTbm.command(null,"start");
+  ticks(1); resumed.online.add("TBM_1"); bottom.name="TBM_1"; bottom.x=1.5; bottom.y=1; bottom.z=0.5; mc.level.visible.add(bottom);
+  ticks(1); check(FakeTbm.completedCount==0 && resumed.sent.get(resumed.sent.size()-1).endsWith("kill"),"displaced bedrock does not mark assigned column");
+  resumed.online.remove("TBM_1"); ticks(1); ticks(100);
+  check(resumed.sent.get(resumed.sent.size()-1).contains("0.5 65 0.5"),"displaced column retried");
+  // Both confirmed columns complete the task and survive a fresh store reload.
+  bottom.x=0.5; resumed.online.add("TBM_1"); ticks(1); check(FakeTbm.completedCount==1,"first assigned column confirmed");
+  resumed.online.remove("TBM_1"); ticks(1); bottom.x=1.5; resumed.online.add("TBM_1"); ticks(1);
+  check(FakeTbm.completedCount==2,"second assigned column confirmed");
+  resumed.online.remove("TBM_1"); ticks(1); check(!FakeTbm.running,"all completed stops after cleanup");
+  FakeTbm.refreshProgress(); check(FakeTbm.completedCount==2,"final progress restored from disk");
   System.out.println("Scheduler tests passed");
  }
 }

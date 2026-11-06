@@ -1,0 +1,1 @@
+package net.minecraft.client.server; import java.nio.file.Path; import net.minecraft.world.level.storage.LevelResource; public class IntegratedServer { public Path getWorldPath(LevelResource r){return Path.of("test-world");} }

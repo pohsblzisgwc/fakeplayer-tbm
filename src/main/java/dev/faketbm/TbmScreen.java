@@ -9,7 +9,7 @@ import net.minecraft.network.chat.Component;
 final class TbmScreen extends Screen {
     private final EditBox[] fields = new EditBox[9];
     private static final String[] LABELS={"X1", "Z1", "X2", "Z2", "搜索起始 Y", "名字前缀", "假人数量", "每次秒数", "命令间隔 tick"};
-    TbmScreen() { super(Component.literal("假人盾构机")); }
+    TbmScreen() { super(Component.literal("假人盾构机")); FakeTbm.refreshProgress(); }
     @Override protected void init() {
         int left=width/2-150, top=Math.max(10, (height-230)/2);
         String[] values={""+FakeTbm.minX,""+FakeTbm.minZ,""+FakeTbm.maxX,""+FakeTbm.maxZ,""+FakeTbm.y,FakeTbm.prefix,""+FakeTbm.count,""+FakeTbm.seconds,""+FakeTbm.interval};
@@ -51,7 +51,12 @@ final class TbmScreen extends Screen {
         int left=width/2-150, top=Math.max(10,(height-230)/2);
         graphics.centeredText(font,title,width/2,top-10,0xffffffff);
         for (int i=0;i<9;i++) graphics.text(font,LABELS[i],left+(i%2)*155,top+(i/2)*30,0xffdddddd);
-        String status=FakeTbm.running ? (FakeTbm.stopping ? "停止中" : "任务运行中")+"：已分配 "+FakeTbm.next+"/"+FakeTbm.total : "未运行";
+        int barWidth=300;
+        long total=FakeTbm.total;
+        int filled=total>0 ? (int)(barWidth*Math.min(1.0,(double)FakeTbm.completedCount/total)) : 0;
+        graphics.fill(left,top+202,left+barWidth,top+213,0xff303030);
+        if (filled>0) graphics.fill(left,top+202,left+filled,top+213,0xff258b58);
+        String status="已确认完成 "+FakeTbm.completedCount+"/"+total+(FakeTbm.running && FakeTbm.stopping ? "（停止中）" : "");
         graphics.centeredText(font,status,width/2,top+203,0xffffffff);
         graphics.centeredText(font,FakeTbm.lastMessage,width/2,top+215,0xffffff80);
     }
