@@ -1,0 +1,1 @@
+package net.minecraft.client.player; public class AbstractClientPlayer { public String name; public double x,z; public String getScoreboardName(){return name;} public double getX(){return x;} public double getZ(){return z;} }

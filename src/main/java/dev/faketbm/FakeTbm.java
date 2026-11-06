@@ -1,0 +1,147 @@
+package dev.faketbm;
+
+import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.builder.LiteralArgumentBuilder;
+import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.network.chat.Component;
+import java.util.Locale;
+
+public final class FakeTbm implements ClientModInitializer {
+    static int minX, maxX, minZ, maxZ, y, count = 3, seconds = 30;
+    static String prefix = "TBM_";
+    static boolean areaSet, running, stopping;
+    private static boolean openScreen;
+    static String lastMessage = "准备就绪";
+    static long total, next;
+    private static long tick, nextCommand;
+    private static Object dimension;
+    private static ClientPacketListener connection;
+    private static Slot[] slots = new Slot[0];
+    private enum Phase { FREE, RETRY, SPAWNING, LOOK, ATTACK, WORKING, KILLING }
+    private static final class Slot {
+        final String name; Phase phase = Phase.FREE; long since; int x,z; boolean complete;
+        Slot(String name) { this.name = name; }
+    }
+    @Override public void onInitializeClient() {
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registry) -> dispatcher.register(
+            LiteralArgumentBuilder.<FabricClientCommandSource>literal("faketbm")
+                .executes(c -> command(c.getSource(), "gui"))
+                .then(com.mojang.brigadier.builder.RequiredArgumentBuilder.<FabricClientCommandSource, String>argument("args", StringArgumentType.greedyString())
+                    .executes(c -> command(c.getSource(), StringArgumentType.getString(c, "args"))))));
+        ClientTickEvents.END_CLIENT_TICK.register(FakeTbm::onTick);
+    }
+    private static void message(String s) {
+        lastMessage = s;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) mc.player.sendSystemMessage(Component.literal("[假人盾构机] " + s));
+    }
+    static int command(FabricClientCommandSource src, String raw) {
+        String[] a = raw.trim().split("\\s+");
+        try {
+            switch (a[0].toLowerCase(Locale.ROOT)) {
+                case "help" -> message("gui | area x1 z1 x2 z2 y | config 前缀 数量 秒 | start | stop | resume | status");
+                case "gui" -> openScreen=true;
+                case "area" -> {
+                    if (running) throw new IllegalArgumentException("运行中不能修改区域");
+                    if (a.length != 6) throw new IllegalArgumentException("用法：area x1 z1 x2 z2 y");
+                    int x1 = Integer.parseInt(a[1]), z1 = Integer.parseInt(a[2]), x2 = Integer.parseInt(a[3]), z2 = Integer.parseInt(a[4]);
+                    int newY = Integer.parseInt(a[5]);
+                    if (Math.abs((long)x1)>30000000 || Math.abs((long)x2)>30000000 || Math.abs((long)z1)>30000000 || Math.abs((long)z2)>30000000 || newY < -2048 || newY > 2047) throw new IllegalArgumentException("坐标超出范围");
+                    y=newY; minX=Math.min(x1,x2); maxX=Math.max(x1,x2); minZ=Math.min(z1,z2); maxZ=Math.max(z1,z2);
+                    total=((long)maxX-minX+1)*((long)maxZ-minZ+1); areaSet=true;
+                    message("区域已设置，共 " + total + " 个位置，方块 Y=" + y);
+                }
+                case "config" -> {
+                    if (running) throw new IllegalArgumentException("运行中不能修改配置");
+                    if (a.length != 4) throw new IllegalArgumentException("用法：config 前缀 数量 秒");
+                    int n=Integer.parseInt(a[2]), s=Integer.parseInt(a[3]);
+                    if (n<1 || n>100 || s<1 || s>86400 || !a[1].matches("[A-Za-z0-9_]+") || a[1].length()+Integer.toString(n).length()>16) throw new IllegalArgumentException("前缀只能为英文、数字或下划线，完整名字不超过16字符；数量1-100，秒数1-86400");
+                    prefix=a[1]; count=n; seconds=s;
+                    message("名字 " + prefix + "1 至 " + prefix + count + "，每个位置 " + seconds + " 秒");
+                }
+                case "start" -> start(Minecraft.getInstance());
+                case "resume" -> {
+                    Minecraft mc=Minecraft.getInstance();
+                    if (!running || mc.getConnection()==null || mc.level==null) throw new IllegalArgumentException("没有可恢复的任务或尚未进入世界");
+                    if (mc.getConnection()==connection) throw new IllegalArgumentException("任务已经连接，切回原维度即可继续");
+                    connection=mc.getConnection();
+                    message("已重新连接任务；请确认当前是原服务器和世界");
+                }
+                case "stop" -> { if (!running) message("当前没有任务"); else { stopping=true; message("正在停止，等待已召唤的假人下线"); } }
+                case "status" -> message(running ? "已分配 " + next + "/" + total + "，" + (Minecraft.getInstance().getConnection()!=connection ? "等待手动恢复连接" : stopping ? "正在停止" : "运行中") : "当前没有运行中的任务");
+                default -> throw new IllegalArgumentException("未知子命令，输入 /faketbm 查看用法");
+            }
+        } catch (NumberFormatException e) { message("数字格式不正确"); return 0; }
+          catch (IllegalArgumentException e) { message(e.getMessage()); return 0; }
+        return 1;
+    }
+    private static void start(Minecraft mc) {
+        if (running) throw new IllegalArgumentException("任务已在运行");
+        if (!areaSet) throw new IllegalArgumentException("请先设置区域");
+        if (mc.level==null || mc.getConnection()==null) throw new IllegalArgumentException("请先进入世界");
+        Slot[] newSlots=new Slot[count];
+        for (int i=0;i<count;i++) {
+            newSlots[i]=new Slot(prefix+(i+1));
+
+        }
+        slots=newSlots; connection=mc.getConnection(); dimension=mc.level.dimension(); next=0; tick=0; nextCommand=0; running=true; stopping=false;
+        message("开始处理 " + total + " 个位置；请保持在线。被占用的名字将等待释放");
+    }
+    private static void send(String cmd) { connection.sendCommand(cmd); nextCommand=tick+20; }
+    private static void onTick(Minecraft mc) {
+        if (openScreen) { openScreen=false; mc.setScreenAndShow(new TbmScreen()); }
+        if (!running) return;
+        // Never issue commands to a different connection after a disconnect or server switch.
+        if (mc.getConnection()!=connection || mc.level==null) return;
+        tick++;
+        boolean sameDimension=mc.level.dimension().equals(dimension);
+        if (tick<nextCommand) return;
+        for (Slot s:slots) {
+            boolean online=connection.getPlayerInfoIgnoreCase(s.name)!=null;
+            if (s.phase==Phase.SPAWNING) {
+                if (online) { s.phase=Phase.LOOK; }
+                else if (tick-s.since>=400 && !stopping && sameDimension) {
+                    sendSpawn(s); message(s.name+" 尚未上线，重试召唤；请检查服务端反馈"); return;
+                } else if (stopping && tick-s.since>=400) { s.phase=Phase.FREE; }
+            }
+            if (s.phase==Phase.KILLING) {
+                if (!online) { s.phase=s.complete || stopping ? Phase.FREE : Phase.RETRY; s.since=tick; }
+                else if (tick-s.since>=400) { send("player "+s.name+" kill"); s.since=tick; message(s.name+" 仍在线，重试清理"); return; }
+            }
+            if (s.phase==Phase.LOOK || s.phase==Phase.ATTACK || s.phase==Phase.WORKING) {
+                if (!online) { s.phase=stopping ? Phase.FREE : Phase.RETRY; s.since=tick; message(s.name+" 已离线，将重试当前位置"); continue; }
+                if (sameDimension && s.phase==Phase.WORKING && tick-s.since>=100) {
+                    // Entity visibility is optional; tab-list presence is the online test.
+                    var entity=mc.level.players().stream().filter(p -> p.getScoreboardName().equalsIgnoreCase(s.name)).findFirst();
+                    if (entity.isPresent() && (Math.abs(entity.get().getX()-(s.x+0.5))>1.5 || Math.abs(entity.get().getZ()-(s.z+0.5))>1.5)) {
+                        s.complete=false; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick;
+                        message(s.name+" 偏离目标，将重新处理当前位置"); return;
+                    }
+                }
+                if (stopping || (s.phase==Phase.WORKING && tick-s.since>=seconds*20L)) {
+                    s.complete=!stopping; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick; return;
+                }
+                if (s.phase==Phase.LOOK) { send("player "+s.name+" look down"); s.phase=Phase.ATTACK; return; }
+                if (s.phase==Phase.ATTACK) { send("player "+s.name+" attack continuous"); s.phase=Phase.WORKING; s.since=tick; return; }
+            }
+            if (s.phase==Phase.RETRY && stopping) s.phase=Phase.FREE;
+            if (s.phase==Phase.RETRY && sameDimension && tick-s.since>=100 && !online && !stopping) { sendSpawn(s); return; }
+        }
+        if (sameDimension && !stopping) for (Slot s:slots) if (s.phase==Phase.FREE && next<total && connection.getPlayerInfoIgnoreCase(s.name)==null) {
+            long width=(long)maxX-minX+1;
+            s.x=(int)(minX+next%width); s.z=(int)(minZ+next/width); next++;
+            sendSpawn(s); return;
+        }
+        boolean idle=true; for (Slot s:slots) if (s.phase!=Phase.FREE) idle=false;
+        if (idle && (stopping || next==total)) { running=false; message(stopping ? "任务已停止" : "区域处理完成，共 "+total+" 个位置"); }
+    }
+    private static void sendSpawn(Slot s) {
+        send("player "+s.name+" spawn at "+(s.x+0.5)+" "+(y+1)+" "+(s.z+0.5));
+        s.phase=Phase.SPAWNING; s.since=tick; s.complete=false;
+    }
+}
