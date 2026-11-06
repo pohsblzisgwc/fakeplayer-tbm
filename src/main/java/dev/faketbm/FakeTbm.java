@@ -8,6 +8,8 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import java.util.Locale;
 
@@ -22,9 +24,9 @@ public final class FakeTbm implements ClientModInitializer {
     private static Object dimension;
     private static ClientPacketListener connection;
     private static Slot[] slots = new Slot[0];
-    private enum Phase { FREE, RETRY, SPAWNING, LOOK, ATTACK, WORKING, KILLING }
+    private enum Phase { FREE, RETRY, TERRAIN, SPAWNING, SNEAK, LOOK, ATTACK, WORKING, KILLING }
     private static final class Slot {
-        final String name; Phase phase = Phase.FREE; long since, retryAt; int x,z, failures, killRetries; boolean complete;
+        final String name; Phase phase = Phase.FREE; long since, retryAt; int x,z, failures, killRetries, terrainFailures; boolean complete;
         Slot(String name) { this.name = name; }
     }
     @Override public void onInitializeClient() {
@@ -92,6 +94,7 @@ public final class FakeTbm implements ClientModInitializer {
         if (running) throw new IllegalArgumentException("任务已在运行");
         if (!areaSet) throw new IllegalArgumentException("请先设置区域");
         if (mc.level==null || mc.getConnection()==null) throw new IllegalArgumentException("请先进入世界");
+        if (y<mc.level.getMinY() || y>mc.level.getMaxY()) throw new IllegalArgumentException("目标 Y 超出当前维度的高度范围");
         Slot[] newSlots=new Slot[count];
         for (int i=0;i<count;i++) {
             newSlots[i]=new Slot(prefix+(i+1));
@@ -112,7 +115,7 @@ public final class FakeTbm implements ClientModInitializer {
         for (Slot s:slots) {
             boolean online=connection.getPlayerInfoIgnoreCase(s.name)!=null;
             if (s.phase==Phase.SPAWNING) {
-                if (online) { s.phase=Phase.LOOK; }
+                if (online) { s.phase=Phase.SNEAK; }
                 else if (tick-s.since>=400) {
                     if (stopping) s.phase=Phase.FREE;
                     else { scheduleRetry(s); message(s.name+" 召唤超时，将退避后重试；请检查服务端反馈"); }
@@ -127,7 +130,7 @@ public final class FakeTbm implements ClientModInitializer {
                     message(s.name+" 仍在线，已退避后重试清理"); return;
                 }
             }
-            if (s.phase==Phase.LOOK || s.phase==Phase.ATTACK || s.phase==Phase.WORKING) {
+            if (s.phase==Phase.SNEAK || s.phase==Phase.LOOK || s.phase==Phase.ATTACK || s.phase==Phase.WORKING) {
                 if (!online) {
                     if (stopping) s.phase=Phase.FREE; else scheduleRetry(s);
                     message(s.name+" 已离线，将退避后重试当前位置"); continue;
@@ -143,20 +146,26 @@ public final class FakeTbm implements ClientModInitializer {
                 if (stopping || (s.phase==Phase.WORKING && tick-s.since>=seconds*20L)) {
                     s.complete=!stopping; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick; s.killRetries=0; return;
                 }
+                if (s.phase==Phase.SNEAK) { send("player "+s.name+" sneak"); s.phase=Phase.LOOK; return; }
                 if (s.phase==Phase.LOOK) { send("player "+s.name+" look down"); s.phase=Phase.ATTACK; return; }
                 if (s.phase==Phase.ATTACK) { send("player "+s.name+" attack continuous"); s.phase=Phase.WORKING; s.since=tick; return; }
             }
             if (s.phase==Phase.RETRY) {
                 // A spawn may arrive after its timeout; keep tracking it instead of losing it.
-                if (online) s.phase=Phase.LOOK;
+                if (online) s.phase=Phase.SNEAK;
                 else if (stopping) s.phase=Phase.FREE;
-                else if (sameDimension && tick>=s.retryAt) { sendSpawn(s); return; }
+                else if (sameDimension && tick>=s.retryAt) { s.phase=Phase.TERRAIN; s.retryAt=tick; }
+            }
+            if (s.phase==Phase.TERRAIN) {
+                if (stopping) s.phase=Phase.FREE;
+                else if (sameDimension && tick>=s.retryAt && trySpawn(mc.level,s)) return;
             }
         }
         if (sameDimension && !stopping) for (Slot s:slots) if (s.phase==Phase.FREE && next<total && connection.getPlayerInfoIgnoreCase(s.name)==null) {
             long width=(long)maxX-minX+1;
             s.x=(int)(minX+next%width); s.z=(int)(minZ+next/width); next++;
-            s.failures=0; sendSpawn(s); return;
+            s.failures=0; s.terrainFailures=0; s.phase=Phase.TERRAIN; s.retryAt=tick;
+            if (trySpawn(mc.level,s)) return;
         }
         boolean idle=true; for (Slot s:slots) if (s.phase!=Phase.FREE) idle=false;
         if (idle && (stopping || next==total)) { running=false; message(stopping ? "任务已停止" : "区域处理完成，共 "+total+" 个位置"); }
@@ -168,8 +177,37 @@ public final class FakeTbm implements ClientModInitializer {
         s.phase=Phase.RETRY; s.retryAt=tick+backoff(100,s.failures);
         s.failures=Math.min(s.failures+1, 6);
     }
-    private static void sendSpawn(Slot s) {
-        send("player "+s.name+" spawn at "+(s.x+0.5)+" "+(y+1)+" "+(s.z+0.5));
+    private static boolean trySpawn(ClientLevel level, Slot s) {
+        if (connection.getPlayerInfoIgnoreCase(s.name)!=null) {
+            s.retryAt=tick+backoff(100,s.terrainFailures);
+            s.terrainFailures=Math.min(s.terrainFailures+1,6);
+            message("名字 "+s.name+" 已在线，等待名字释放");
+            return false;
+        }
+        Integer floor=findFloor(level, s.x, s.z);
+        if (floor==null) {
+            s.retryAt=tick+backoff(100,s.terrainFailures);
+            s.terrainFailures=Math.min(s.terrainFailures+1,6);
+            message("位置 "+s.x+", "+s.z+" 未加载或没有安全落脚点，等待后重试");
+            return false;
+        }
+        s.terrainFailures=0;
+        send("player "+s.name+" spawn at "+(s.x+0.5)+" "+(floor+1)+" "+(s.z+0.5));
         s.phase=Phase.SPAWNING; s.since=tick; s.complete=false;
+        return true;
+    }
+    // Search downward through air only; never descend through a block into a cave.
+    private static Integer findFloor(ClientLevel level, int x, int z) {
+        if (!level.hasChunk(x >> 4, z >> 4)) return null;
+        for (int h=y;h>=level.getMinY();h--) {
+            BlockPos floor=new BlockPos(x,h,z);
+            var state=level.getBlockState(floor);
+            if (state.isAir()) continue;
+            if (state.isCollisionShapeFullBlock(level,floor)
+                    && level.getBlockState(new BlockPos(x,h+1,z)).isAir()
+                    && level.getBlockState(new BlockPos(x,h+2,z)).isAir()) return h;
+            return null;
+        }
+        return null;
     }
 }

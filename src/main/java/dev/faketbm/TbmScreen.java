@@ -8,7 +8,7 @@ import net.minecraft.network.chat.Component;
 
 final class TbmScreen extends Screen {
     private final EditBox[] fields = new EditBox[9];
-    private static final String[] LABELS={"X1", "Z1", "X2", "Z2", "目标方块 Y", "名字前缀", "假人数量", "每次秒数", "命令间隔 tick"};
+    private static final String[] LABELS={"X1", "Z1", "X2", "Z2", "搜索起始 Y", "名字前缀", "假人数量", "每次秒数", "命令间隔 tick"};
     TbmScreen() { super(Component.literal("假人盾构机")); }
     @Override protected void init() {
         int left=width/2-150, top=Math.max(10, (height-230)/2);
