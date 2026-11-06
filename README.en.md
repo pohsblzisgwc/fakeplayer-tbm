@@ -1,5 +1,7 @@
 # Fake Player TBM 1.1.0
 
+**AI disclosure: This project was developed entirely by OpenAI Codex.**
+
 [简体中文](README.md)
 
 A Minecraft Java 26.3 Fabric client mod that uses Carpet's `/player` command to process a horizontal rectangle with a bounded, reusable pool of fake player names.

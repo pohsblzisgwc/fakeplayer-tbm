@@ -1,5 +1,7 @@
 # 假人盾构机 1.1.0
 
+**AI 声明：本项目完全由 OpenAI Codex 开发。**
+
 [English](README.en.md)
 
 Minecraft Java 版 26.3 Fabric 客户端模组，通过服务端 Carpet `/player` 命令，让有限名字的假人依次处理水平矩形内的方块。
