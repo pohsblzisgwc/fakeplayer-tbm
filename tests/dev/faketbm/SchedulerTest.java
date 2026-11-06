@@ -30,6 +30,16 @@ public final class SchedulerTest {
   check(FakeTbm.running,"kill timeout does not stop");
   c.online.remove("TBM_1"); ticks(120);
   check(c.sent.stream().filter(s->s.startsWith("player TBM_1 spawn")).count()>=2,"drift retries same block after cleanup");
+  FakeTbm.running=false; c.online.clear(); c.sent.clear(); mc.level.visible.clear();
+  check(FakeTbm.command(null,"interval 0")==0 && FakeTbm.interval==20,"reject interval below one tick");
+  check(FakeTbm.command(null,"interval 1")==1,"one-tick interval");
+  FakeTbm.command(null,"area 0 0 1 0 64"); FakeTbm.command(null,"config TBM_ 2 30"); FakeTbm.command(null,"start");
+  ticks(1); c.online.add("TBM_1"); ticks(1); ticks(1);
+  check(c.sent.size()==3 && c.sent.get(1).endsWith("look down") && c.sent.get(2).endsWith("attack continuous"),"one command per tick");
+  check(FakeTbm.command(null,"interval 7")==1,"change interval while running");
+  ticks(6); check(c.sent.size()==3,"new interval prevents early command");
+  ticks(1); check(c.sent.size()==4 && c.sent.get(3).startsWith("player TBM_2 spawn"),"new interval applied");
+  check(FakeTbm.command(null,"interval 1201")==0 && FakeTbm.interval==7,"reject out-of-range interval");
   System.out.println("Scheduler tests passed");
  }
 }

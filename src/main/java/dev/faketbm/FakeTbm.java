@@ -12,13 +12,13 @@ import net.minecraft.network.chat.Component;
 import java.util.Locale;
 
 public final class FakeTbm implements ClientModInitializer {
-    static int minX, maxX, minZ, maxZ, y, count = 3, seconds = 30;
+    static int minX, maxX, minZ, maxZ, y, count = 3, seconds = 30, interval = 20;
     static String prefix = "TBM_";
     static boolean areaSet, running, stopping;
     private static boolean openScreen;
     static String lastMessage = "准备就绪";
     static long total, next;
-    private static long tick, nextCommand;
+    private static long tick, nextCommand, lastCommand;
     private static Object dimension;
     private static ClientPacketListener connection;
     private static Slot[] slots = new Slot[0];
@@ -44,7 +44,7 @@ public final class FakeTbm implements ClientModInitializer {
         String[] a = raw.trim().split("\\s+");
         try {
             switch (a[0].toLowerCase(Locale.ROOT)) {
-                case "help" -> message("gui | area x1 z1 x2 z2 y | config 前缀 数量 秒 | start | stop | resume | status");
+                case "help" -> message("gui | area x1 z1 x2 z2 y | config 前缀 数量 秒 | interval tick数 | start | stop | resume | status");
                 case "gui" -> openScreen=true;
                 case "area" -> {
                     if (running) throw new IllegalArgumentException("运行中不能修改区域");
@@ -63,6 +63,14 @@ public final class FakeTbm implements ClientModInitializer {
                     if (n<1 || n>100 || s<1 || s>86400 || !a[1].matches("[A-Za-z0-9_]+") || a[1].length()+Integer.toString(n).length()>16) throw new IllegalArgumentException("前缀只能为英文、数字或下划线，完整名字不超过16字符；数量1-100，秒数1-86400");
                     prefix=a[1]; count=n; seconds=s;
                     message("名字 " + prefix + "1 至 " + prefix + count + "，每个位置 " + seconds + " 秒");
+                }
+                case "interval" -> {
+                    if (a.length != 2) throw new IllegalArgumentException("用法：interval tick数（1–1200）");
+                    int value=Integer.parseInt(a[1]);
+                    if (value<1 || value>1200) throw new IllegalArgumentException("命令间隔须为 1–1200 tick");
+                    interval=value;
+                    if (running) nextCommand=Math.max(tick, lastCommand+interval);
+                    message("命令间隔已设为 " + interval + " tick；服务器可能限制命令频率");
                 }
                 case "start" -> start(Minecraft.getInstance());
                 case "resume" -> {
@@ -89,10 +97,10 @@ public final class FakeTbm implements ClientModInitializer {
             newSlots[i]=new Slot(prefix+(i+1));
 
         }
-        slots=newSlots; connection=mc.getConnection(); dimension=mc.level.dimension(); next=0; tick=0; nextCommand=0; running=true; stopping=false;
+        slots=newSlots; connection=mc.getConnection(); dimension=mc.level.dimension(); next=0; tick=0; nextCommand=0; lastCommand=0; running=true; stopping=false;
         message("开始处理 " + total + " 个位置；请保持在线。被占用的名字将等待释放");
     }
-    private static void send(String cmd) { connection.sendCommand(cmd); nextCommand=tick+20; }
+    private static void send(String cmd) { connection.sendCommand(cmd); lastCommand=tick; nextCommand=tick+interval; }
     private static void onTick(Minecraft mc) {
         if (openScreen) { openScreen=false; mc.setScreenAndShow(new TbmScreen()); }
         if (!running) return;

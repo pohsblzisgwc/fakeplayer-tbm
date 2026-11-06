@@ -11,4 +11,4 @@ CP="$MC_JAR:$(find "$MC_DIR/libraries" build/deps/META-INF/jars -name '*.jar' -p
 javac --release 25 -encoding UTF-8 -cp "$CP" -d build/classes $(find src/main/java -name '*.java')
 cp -r src/main/resources/. build/classes/
 cp LICENSE build/classes/LICENSE_fake-player-tbm
-jar --create --file build/libs/fake-player-tbm-1.1.0.jar -C build/classes .
+jar --create --file build/libs/fake-player-tbm-1.2.0.jar -C build/classes .
