@@ -1,4 +1,4 @@
-# Fake Player TBM 1.2.0
+# Fake Player TBM 1.3.0
 
 **AI disclosure: This project was developed entirely by OpenAI Codex.**
 
@@ -34,7 +34,7 @@ Names consist of the prefix and a number starting at 1. Use only letters, digits
 
 ## Recovery and limitations
 
-- If a fake player disconnects early, its coordinate remains assigned and is retried. Failed spawns and removals are retried periodically while other slots continue. A name already online is left alone until it is free. Persistent server errors will cause repeated attempts; check server feedback.
+- If a fake player dies or disconnects early, its coordinate remains assigned and is retried using exponential backoff. Failed spawns, position deviations and removals also use backoff while other slots continue. For each coordinate, retries wait 5, 10, 20, 40 seconds and so on, capped at 300 seconds; the count resets when a completed slot gets a new coordinate. Spawn attempts first wait 20 seconds for a connection before backoff starts. Removal retries have a separate counter, starting at 20 seconds and doubling to a maximum of 300 seconds. Times are based on 20 client ticks per second. A name already online is left alone until it is free. Persistent server errors will cause repeated attempts; check server feedback.
 - When the fake player's entity is visible to the client, a horizontal deviation greater than 1.5 blocks from the target centre causes cleanup and a retry. Entities outside client tracking range or in another dimension cannot be position-checked. Vertical movement alone does not trigger a retry.
 - When the user changes dimension, new spawns pause until they return to the original dimension; control and cleanup of already online fake players are still attempted. A disconnected task remains in memory only while the client process is running. Reconnect to the original server and world, then choose **确认原服后恢复** or run `/faketbm resume`. The mod cannot verify that the world is the original one; do not resume on another server. Closing the game loses the task, and fake players may require manual cleanup.
 - The client must stay connected to schedule work. Disconnection, game exit and rejected commands can prevent cleanup; use `/player NAME kill` manually when necessary. On stop, a spawn that does not appear within the timeout is abandoned; a very late spawn may require manual cleanup.

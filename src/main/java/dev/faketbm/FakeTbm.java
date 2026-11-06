@@ -24,7 +24,7 @@ public final class FakeTbm implements ClientModInitializer {
     private static Slot[] slots = new Slot[0];
     private enum Phase { FREE, RETRY, SPAWNING, LOOK, ATTACK, WORKING, KILLING }
     private static final class Slot {
-        final String name; Phase phase = Phase.FREE; long since; int x,z; boolean complete;
+        final String name; Phase phase = Phase.FREE; long since, retryAt; int x,z, failures, killRetries; boolean complete;
         Slot(String name) { this.name = name; }
     }
     @Override public void onInitializeClient() {
@@ -113,40 +113,60 @@ public final class FakeTbm implements ClientModInitializer {
             boolean online=connection.getPlayerInfoIgnoreCase(s.name)!=null;
             if (s.phase==Phase.SPAWNING) {
                 if (online) { s.phase=Phase.LOOK; }
-                else if (tick-s.since>=400 && !stopping && sameDimension) {
-                    sendSpawn(s); message(s.name+" 尚未上线，重试召唤；请检查服务端反馈"); return;
-                } else if (stopping && tick-s.since>=400) { s.phase=Phase.FREE; }
+                else if (tick-s.since>=400) {
+                    if (stopping) s.phase=Phase.FREE;
+                    else { scheduleRetry(s); message(s.name+" 召唤超时，将退避后重试；请检查服务端反馈"); }
+                }
             }
             if (s.phase==Phase.KILLING) {
-                if (!online) { s.phase=s.complete || stopping ? Phase.FREE : Phase.RETRY; s.since=tick; }
-                else if (tick-s.since>=400) { send("player "+s.name+" kill"); s.since=tick; message(s.name+" 仍在线，重试清理"); return; }
+                if (!online) {
+                    if (s.complete || stopping) s.phase=Phase.FREE;
+                    else scheduleRetry(s);
+                } else if (tick-s.since>=backoff(400,s.killRetries)) {
+                    send("player "+s.name+" kill"); s.since=tick; s.killRetries=Math.min(s.killRetries+1, 6);
+                    message(s.name+" 仍在线，已退避后重试清理"); return;
+                }
             }
             if (s.phase==Phase.LOOK || s.phase==Phase.ATTACK || s.phase==Phase.WORKING) {
-                if (!online) { s.phase=stopping ? Phase.FREE : Phase.RETRY; s.since=tick; message(s.name+" 已离线，将重试当前位置"); continue; }
+                if (!online) {
+                    if (stopping) s.phase=Phase.FREE; else scheduleRetry(s);
+                    message(s.name+" 已离线，将退避后重试当前位置"); continue;
+                }
                 if (sameDimension && s.phase==Phase.WORKING && tick-s.since>=100) {
                     // Entity visibility is optional; tab-list presence is the online test.
                     var entity=mc.level.players().stream().filter(p -> p.getScoreboardName().equalsIgnoreCase(s.name)).findFirst();
                     if (entity.isPresent() && (Math.abs(entity.get().getX()-(s.x+0.5))>1.5 || Math.abs(entity.get().getZ()-(s.z+0.5))>1.5)) {
-                        s.complete=false; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick;
+                        s.complete=false; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick; s.killRetries=0;
                         message(s.name+" 偏离目标，将重新处理当前位置"); return;
                     }
                 }
                 if (stopping || (s.phase==Phase.WORKING && tick-s.since>=seconds*20L)) {
-                    s.complete=!stopping; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick; return;
+                    s.complete=!stopping; send("player "+s.name+" kill"); s.phase=Phase.KILLING; s.since=tick; s.killRetries=0; return;
                 }
                 if (s.phase==Phase.LOOK) { send("player "+s.name+" look down"); s.phase=Phase.ATTACK; return; }
                 if (s.phase==Phase.ATTACK) { send("player "+s.name+" attack continuous"); s.phase=Phase.WORKING; s.since=tick; return; }
             }
-            if (s.phase==Phase.RETRY && stopping) s.phase=Phase.FREE;
-            if (s.phase==Phase.RETRY && sameDimension && tick-s.since>=100 && !online && !stopping) { sendSpawn(s); return; }
+            if (s.phase==Phase.RETRY) {
+                // A spawn may arrive after its timeout; keep tracking it instead of losing it.
+                if (online) s.phase=Phase.LOOK;
+                else if (stopping) s.phase=Phase.FREE;
+                else if (sameDimension && tick>=s.retryAt) { sendSpawn(s); return; }
+            }
         }
         if (sameDimension && !stopping) for (Slot s:slots) if (s.phase==Phase.FREE && next<total && connection.getPlayerInfoIgnoreCase(s.name)==null) {
             long width=(long)maxX-minX+1;
             s.x=(int)(minX+next%width); s.z=(int)(minZ+next/width); next++;
-            sendSpawn(s); return;
+            s.failures=0; sendSpawn(s); return;
         }
         boolean idle=true; for (Slot s:slots) if (s.phase!=Phase.FREE) idle=false;
         if (idle && (stopping || next==total)) { running=false; message(stopping ? "任务已停止" : "区域处理完成，共 "+total+" 个位置"); }
+    }
+    private static long backoff(long base, int failures) {
+        return Math.min(6000L, base << Math.min(failures, 6));
+    }
+    private static void scheduleRetry(Slot s) {
+        s.phase=Phase.RETRY; s.retryAt=tick+backoff(100,s.failures);
+        s.failures=Math.min(s.failures+1, 6);
     }
     private static void sendSpawn(Slot s) {
         send("player "+s.name+" spawn at "+(s.x+0.5)+" "+(y+1)+" "+(s.z+0.5));

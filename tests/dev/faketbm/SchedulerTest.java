@@ -40,6 +40,33 @@ public final class SchedulerTest {
   ticks(6); check(c.sent.size()==3,"new interval prevents early command");
   ticks(1); check(c.sent.size()==4 && c.sent.get(3).startsWith("player TBM_2 spawn"),"new interval applied");
   check(FakeTbm.command(null,"interval 1201")==0 && FakeTbm.interval==7,"reject out-of-range interval");
+  // Consecutive spawn timeouts add 5, then 10 seconds after the 20-second observation window.
+  FakeTbm.running=false; c.online.clear(); c.sent.clear();
+  FakeTbm.command(null,"area 0 0 0 0 64"); FakeTbm.command(null,"config TBM_ 1 30"); FakeTbm.command(null,"interval 1"); FakeTbm.command(null,"start");
+  ticks(1); ticks(400); ticks(99); check(c.sent.size()==1,"no spawn before first backoff");
+  ticks(1); check(c.sent.size()==2,"first spawn retry after 100 ticks");
+  ticks(400); ticks(199); check(c.sent.size()==2,"second spawn backoff doubles");
+  ticks(1); check(c.sent.size()==3,"second spawn retry after 200 ticks");
+  // A late spawn during backoff is adopted rather than retried or forgotten.
+  ticks(400); c.online.add("TBM_1"); ticks(2);
+  check(c.sent.size()==4 && c.sent.get(3).endsWith("look down"),"late spawn adopted");
+  // Consecutive deaths use the same growing per-position backoff.
+  FakeTbm.running=false; c.online.clear(); c.sent.clear();
+  FakeTbm.command(null,"start"); ticks(1); c.online.add("TBM_1"); ticks(2);
+  c.online.remove("TBM_1"); ticks(1); ticks(99); check(c.sent.size()==3,"death first backoff");
+  ticks(1); check(c.sent.size()==4,"first death retry after 100 ticks");
+  c.online.add("TBM_1"); ticks(2); c.online.remove("TBM_1"); ticks(1);
+  ticks(199); check(c.sent.size()==6,"death second backoff doubles");
+  ticks(1); check(c.sent.size()==7,"second death retry after 200 ticks");
+  // Cleanup retries wait 20, then 40 seconds, capped at 300 seconds.
+  FakeTbm.running=false; c.online.clear(); c.sent.clear();
+  FakeTbm.command(null,"config TBM_ 1 1"); FakeTbm.command(null,"start");
+  ticks(1); c.online.add("TBM_1"); ticks(2); ticks(20);
+  check(c.sent.size()==4 && c.sent.get(3).endsWith("kill"),"initial kill");
+  ticks(399); check(c.sent.size()==4,"first cleanup delay"); ticks(1); check(c.sent.size()==5,"first cleanup retry");
+  ticks(799); check(c.sent.size()==5,"second cleanup delay doubles"); ticks(1); check(c.sent.size()==6,"second cleanup retry");
+  Method backoff=FakeTbm.class.getDeclaredMethod("backoff",long.class,int.class); backoff.setAccessible(true);
+  check((long)backoff.invoke(null,100L,6)==6000L && (long)backoff.invoke(null,400L,6)==6000L,"backoff cap");
   System.out.println("Scheduler tests passed");
  }
 }
